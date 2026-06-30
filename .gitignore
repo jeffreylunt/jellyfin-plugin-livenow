@@ -11,3 +11,5 @@ dist/stage/
 # OS
 .DS_Store
 dist/
+daemon/__pycache__/
+*.pyc

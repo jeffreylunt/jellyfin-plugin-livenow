@@ -8,6 +8,14 @@
         "category": "Live TV",
         "versions": [
             {
+                "version": "2.0.0.0",
+                "changelog": "Self-contained, one-install release: the warm-channel name badge (🔥xN) + favorite-float now run entirely IN-PROCESS as a background service inside Jellyfin (via IPluginServiceRegistrator) — no external daemon, no File Transformation plugin, no config required. Favorites float instantly via IUserDataManager (fires the change event, no restart). Safety: only ever removes favorites it added (never a user's own); reconcile-on-startup strips stale badges AND clears stale owned favorites; graceful revert on stop. Native dashboard config page (enable, favorite-float, poll interval). Removes the old web page/tab + bulk endpoint.",
+                "targetAbi": "10.11.0.0",
+                "sourceUrl": "https://github.com/jeffreylunt/jellyfin-plugin-livenow/releases/download/v2.0.0/live-now_2.0.0.0.zip",
+                "checksum": "517afe0fa1ae0921291bc4bf8fdbb35b",
+                "timestamp": "2026-06-30T23:30:00Z"
+            },
+            {
                 "version": "1.0.0.0",
                 "changelog": "Initial release: GET /LiveNow/Channels warm-channel API + embedded mobile Live Now page with one-tap tune-to-play (server-side PlayNow on the caller's own session, with a channel-detail deep-link fallback).",
                 "targetAbi": "10.11.0.0",

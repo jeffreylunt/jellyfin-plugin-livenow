@@ -4,8 +4,8 @@
     <TargetFramework>net9.0</TargetFramework>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <RootNamespace>Jellyfin.Plugin.LiveNow</RootNamespace>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>2.0.0.0</AssemblyVersion>
+    <FileVersion>2.0.0.0</FileVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
@@ -17,8 +17,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Embedded web page shipped inside the DLL and exposed via IHasWebPages. -->
-    <EmbeddedResource Include="Web\livenow.html" />
+    <!-- The dashboard config page (native IHasWebPages — no web-client injection). -->
+    <EmbeddedResource Include="Web\livenowconfig.html" />
   </ItemGroup>
 
 </Project>

@@ -42,8 +42,8 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         "so you can tune into a warm channel instead of opening a new upstream slot.";
 
     /// <summary>
-    /// Returns the embedded web pages this plugin exposes (the Live Now page,
-    /// reachable from the dashboard plugin list and as a Custom Tab URL).
+    /// Returns the plugin's dashboard settings page (a native Jellyfin config page — no web-client
+    /// injection). This is the only UI; the rest of the plugin is the in-process background loop.
     /// </summary>
     /// <returns>Web page info.</returns>
     public IEnumerable<PluginPageInfo> GetPages()
@@ -52,10 +52,10 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         {
             new PluginPageInfo
             {
-                Name = "livenow",
+                Name = "livenowconfig",
                 EmbeddedResourcePath = string.Format(
                     CultureInfo.InvariantCulture,
-                    "{0}.Web.livenow.html",
+                    "{0}.Web.livenowconfig.html",
                     GetType().Namespace),
             },
         };

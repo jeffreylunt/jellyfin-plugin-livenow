@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Live Now</title>
+</head>
+<body>
+  <div id="liveNowConfigPage"
+       data-role="page"
+       class="page type-interior pluginConfigurationPage"
+       data-require="emby-input,emby-button,emby-checkbox">
+    <div data-role="content">
+      <div class="content-primary">
+        <form id="liveNowConfigForm" style="margin: 0 auto;">
+
+          <div class="verticalSection verticalSection-extrabottompadding">
+            <h2 class="sectionTitle">Live Now</h2>
+            <p class="fieldDescription" style="margin-top: 0;">
+              Floats currently-watched ("warm") Live TV channels to the top of every user's
+              guide (favorites) and badges them with a live viewer count (e.g.
+              &#x1F525;x3 ESPN HD), reverting the moment a channel goes cold. Everything runs
+              in-process inside Jellyfin &mdash; no external service, instant float.
+            </p>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="Enabled" />
+              <span>Enable Live Now</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">
+              Master switch for the background loop (name badges + favorite float).
+            </div>
+          </div>
+
+          <div class="checkboxContainer checkboxContainer-withDescription">
+            <label>
+              <input is="emby-checkbox" type="checkbox" id="EnableFavoriteFloat" />
+              <span>Float warm channels to favorites (all users)</span>
+            </label>
+            <div class="fieldDescription checkboxFieldDescription">
+              Sets IsFavorite on warm channels for every user so they rise to the top of the
+              native guide. The plugin only ever removes favorites it added &mdash; a user's own
+              favorites are never touched. Turn off to keep only the name badge.
+            </div>
+          </div>
+
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="PollSeconds">Poll interval (seconds)</label>
+            <input is="emby-input" type="number" id="PollSeconds" min="5" step="1" />
+            <div class="fieldDescription">How often to re-check active playback. Default 45.</div>
+          </div>
+
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="FullFavoritePassEvery">Full re-evaluation every (cycles)</label>
+            <input is="emby-input" type="number" id="FullFavoritePassEvery" min="1" step="1" />
+            <div class="fieldDescription">
+              How often to re-evaluate ALL warm channels (vs the cheap delta) to catch new users
+              or a transient miss. Default 10 (~7.5 min at a 45s poll).
+            </div>
+          </div>
+
+          <div class="inputContainer">
+            <label class="inputLabel inputLabelUnfocused" for="RefreshSeconds">Live Now page refresh (seconds)</label>
+            <input is="emby-input" type="number" id="RefreshSeconds" min="5" step="1" />
+            <div class="fieldDescription">How often the Live Now web page auto-refreshes. Default 15.</div>
+          </div>
+
+          <div>
+            <button is="emby-button" type="submit" class="raised button-submit block">
+              <span>Save</span>
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <script type="text/javascript">
+      (function () {
+        var pluginId = "b919b337-587b-4533-922e-c8f8c5c8c9b0";
+
+        function load(page) {
+          Dashboard.showLoadingMsg();
+          ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+            page.querySelector("#Enabled").checked = config.Enabled !== false;
+            page.querySelector("#EnableFavoriteFloat").checked = config.EnableFavoriteFloat !== false;
+            page.querySelector("#PollSeconds").value = config.PollSeconds || 45;
+            page.querySelector("#FullFavoritePassEvery").value = config.FullFavoritePassEvery || 10;
+            page.querySelector("#RefreshSeconds").value = config.RefreshSeconds || 15;
+            Dashboard.hideLoadingMsg();
+          });
+        }
+
+        function save(page) {
+          Dashboard.showLoadingMsg();
+          ApiClient.getPluginConfiguration(pluginId).then(function (config) {
+            config.Enabled = page.querySelector("#Enabled").checked;
+            config.EnableFavoriteFloat = page.querySelector("#EnableFavoriteFloat").checked;
+            config.PollSeconds = Math.max(5, parseInt(page.querySelector("#PollSeconds").value, 10) || 45);
+            config.FullFavoritePassEvery = Math.max(1, parseInt(page.querySelector("#FullFavoritePassEvery").value, 10) || 10);
+            config.RefreshSeconds = Math.max(5, parseInt(page.querySelector("#RefreshSeconds").value, 10) || 15);
+            ApiClient.updatePluginConfiguration(pluginId, config).then(function (result) {
+              Dashboard.processPluginConfigurationUpdateResult(result);
+            });
+          });
+        }
+
+        document.querySelector("#liveNowConfigPage").addEventListener("pageshow", function () {
+          load(this);
+        });
+
+        document.querySelector("#liveNowConfigForm").addEventListener("submit", function (e) {
+          save(document.querySelector("#liveNowConfigPage"));
+          e.preventDefault();
+          return false;
+        });
+      })();
+    </script>
+  </div>
+</body>
+</html>
