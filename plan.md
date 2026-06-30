@@ -88,9 +88,21 @@ files in place (disabled) as a fallback until E2E passes; only then leave it ret
 - Version-bumped, release DLL/zip pushed to the public repo with "install this one plugin"
   instructions. Knowledge updated. External daemon retired + FT inject removed from Jeff's box.
 
-## Status
-- [in progress] Pivot from the bulk-endpoint-for-external-daemon design (built, tested green,
-  NEVER deployed — superseded; live system untouched, daemon still source of truth, inactive).
-- ABI reflection done: IHostedService via IPluginServiceRegistrator, IScheduledTask,
-  IUserDataManager (GetUserData/SaveUserData), IUserManager.Users (User entity),
-  ILibraryManager.GetItemById/UpdateItemAsync, IApplicationPaths.WebPath, ISessionManager.
+## Status (2026-06-30, end of session — HOLDING)
+- DONE: v2.0.0.0 in-process plugin built; 23 xUnit tests green; both engine code reviews clean
+  (fixes #1/#3/I-1/I-2/M-1/#7 applied); committed on branch live-now-guide-daemon
+  (32307f3 code, d67a726 README). NOT pushed (publish gated).
+- DEPLOYED + VERIFIED on Jeff's live Jellyfin (earlier 0-viewer window): loaded clean, 🔥 badge
+  in ~3s (in-process, vs daemon ~2min), favorite-float worked 22/23 users, cold-revert cleared
+  all 22 plugin-added favs + reverted name, non-jeff user's OWN favorite SURVIVED. Daemon
+  stopped+disabled (user systemd unit), FT inject cleared.
+- HOLD (team-lead): TV in use (stevens watching). A clean-E2E that fired pre-hold was stopped +
+  the live system fully restored (0 decorated, 0 stale favs). v2 installed + idle (harmless).
+- REMAINING (all gated on team-lead all-clear, viewers gone):
+  1. Clean-conditions E2E for exact float-latency numbers (first-float / all-23-users-float).
+  2. git tag v2.0.0 + push branch + create GitHub Release with live-now_2.0.0.0.zip (manifest
+     already points at it w/ checksum 517afe0fa1ae0921291bc4bf8fdbb35b).
+  3. Leave daemon retired (files remain as fallback) once E2E re-confirms no regression.
+- ABI reflection done: IHostedService via IPluginServiceRegistrator, IUserDataManager
+  (GetUserData/SaveUserData UpdateUserRating), IUserManager.Users (Jellyfin.Database...User),
+  ILibraryManager.GetItemById/GetItemList/UpdateToRepositoryAsync, ISessionManager.
