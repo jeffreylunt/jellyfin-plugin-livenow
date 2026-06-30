@@ -38,6 +38,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---- config (env-overridable) ----
 BASE = os.environ.get("JELLYFIN_URL", "http://localhost:8096/jellyfin").rstrip("/")
@@ -53,6 +54,16 @@ PREFIX_RE = re.compile(
 # A user we can pass for the /Items read (any valid user id works for metadata read).
 USER_ID = os.environ.get("JELLYFIN_USER_ID", "727583f8f86b42b4ac500a28ddfe5f56")  # jeff
 
+# Auto-favorite warm channels for ALL users so they float to the top of the native TV
+# guide's favorites block (the only top-of-screen lever — the guide is number-sorted).
+# OFF by default; enable via ENABLE_AUTO_FAVORITE=true.
+ENABLE_AUTO_FAVORITE = os.environ.get("ENABLE_AUTO_FAVORITE", "false").lower() == "true"
+# Persistent record of every (userId, channelId) favorite the DAEMON added. We only ever
+# remove favorites listed here — NEVER a favorite a user set themselves.
+OWNED_FAVORITES_FILE = os.environ.get(
+    "OWNED_FAVORITES_FILE", "/home/jeff/live-now-guide/owned-favorites.json"
+)
+
 HEADERS = {
     "Authorization": f'MediaBrowser Token="{TOKEN}"',
     "Content-Type": "application/json",
@@ -60,23 +71,90 @@ HEADERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Owned-favorites state (persistent) + the pure add/remove decision logic.
+# The decision logic is intentionally side-effect-free so it can be unit-tested
+# (test_favorites.py) — this is the safety-critical "never delete a user's own
+# favorite" guarantee.
+# ---------------------------------------------------------------------------
+def load_owned():
+    """Load the set of (userId, channelId) favorites the daemon added. Never crashes."""
+    try:
+        with open(OWNED_FAVORITES_FILE, "r") as f:
+            return set(tuple(pair) for pair in json.load(f))
+    except (FileNotFoundError, ValueError, json.JSONDecodeError):
+        return set()
+    except Exception:
+        return set()
+
+
+def save_owned(owned):
+    tmp = OWNED_FAVORITES_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(sorted(list(t) for t in owned), f)
+    os.replace(tmp, OWNED_FAVORITES_FILE)
+
+
+def plan_favorite_changes(warm, users, current_favs, owned):
+    """
+    Pure decision: given the warm channel set, the user list, the current favorite state
+    {(user,channel): bool}, and the set of daemon-owned favorites, return (adds, removes)
+    of (userId, channelId) pairs to write.
+
+    Rules (safety-critical):
+      - ADD a (user, warm-channel) favorite only if the user does NOT already have it.
+        (If they already favorited it themselves, leave it; do not mark it owned.)
+      - REMOVE a (user, channel) favorite ONLY if it is in `owned` AND the channel is no
+        longer warm. NEVER remove a favorite that isn't daemon-owned.
+    """
+    warm = set(warm)
+    adds = set()
+    removes = set()
+
+    # Adds: warm channels, for every user we CONFIRMED does not already have them favorited.
+    # If a user's favorite state is UNKNOWN (read failed -> key absent), we skip them this
+    # cycle — we never claim ownership we're unsure of (avoids deleting a real favorite later).
+    for cid in warm:
+        for uid in users:
+            key = (uid, cid)
+            if key not in current_favs:
+                continue  # unknown -> skip (safe)
+            if current_favs[key] is False and key not in owned:
+                adds.add(key)
+
+    # Removes: only daemon-owned favorites whose channel is no longer warm.
+    for (uid, cid) in owned:
+        if cid not in warm:
+            removes.add((uid, cid))
+
+    return adds, removes
+
+
 def log(msg):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
-def api(method, path, body=None):
+def api(method, path, body=None, timeout=20, retries=1):
+    """One API call. Retries once on transient connection errors (the server occasionally
+    drops connections under the favorite-read burst — a single retry clears it)."""
     url = BASE + path
     data = None
     if body is not None:
         # ensure_ascii=True so the bytes we send are pure ASCII-escaped JSON (the server
         # decodes \uXXXX back to the emoji). Avoids any transport encoding ambiguity.
         data = json.dumps(body, ensure_ascii=True).encode("ascii")
-    req = urllib.request.Request(url, data=data, headers=HEADERS, method=method)
-    with urllib.request.urlopen(req, timeout=20) as r:
-        raw = r.read()
-        if not raw:
-            return None
-        return json.loads(raw.decode("utf-8"))
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, data=data, headers=HEADERS, method=method)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+                return json.loads(raw.decode("utf-8")) if raw else None
+        except (urllib.error.URLError, ConnectionError, OSError) as e:
+            last = e
+            if attempt < retries:
+                time.sleep(0.5)
+    raise last
 
 
 def strip_prefix(name):
@@ -86,6 +164,137 @@ def strip_prefix(name):
 
 def decorate(name, n):
     return f"\U0001F525x{n} {name}"  # 🔥x<n> <name>, e.g. "🔥x3 ESPN HD"
+
+
+def get_users():
+    """All user ids on the server (fetched fresh each cycle so new users are covered)."""
+    users = api("GET", "/Users")
+    return [u["Id"] for u in (users or []) if u.get("Id")]
+
+
+FAV_READ_TIMEOUT = int(os.environ.get("FAV_READ_TIMEOUT", "40"))
+# Gentle concurrency: enough to beat the per-call latency across ~24 users without
+# overwhelming the Jellyfin server (which drops connections under a heavy read burst).
+FAV_READ_WORKERS = int(os.environ.get("FAV_READ_WORKERS", "4"))
+
+
+def _user_fav_for(uid, ids_csv, want):
+    """One user's IsFavorite for the channels-of-interest. Targeted /Items?Ids= query
+    (only the few channels we care about — far cheaper than the full live-tv channel list)."""
+    out = {}
+    data = api("GET", f"/Items?userId={uid}&Ids={ids_csv}&Fields=", timeout=FAV_READ_TIMEOUT)
+    for ch in (data or {}).get("Items", []):
+        cid = ch.get("Id")
+        if cid in want:
+            out[(uid, cid)] = bool(ch.get("UserData", {}).get("IsFavorite"))
+    return out
+
+
+def get_favorite_state(users, channel_ids):
+    """Return {(userId, channelId): bool} IsFavorite for users x channels-of-interest.
+    Runs the per-user reads CONCURRENTLY (the API is slow per call under load; 24 sequential
+    reads blow the timeout, but in parallel they finish in ~one slow-call's time)."""
+    want = set(channel_ids)
+    ids_csv = ",".join(want)
+    state = {}
+    with ThreadPoolExecutor(max_workers=FAV_READ_WORKERS) as ex:
+        futs = {ex.submit(_user_fav_for, uid, ids_csv, want): uid for uid in users}
+        for fut in as_completed(futs):
+            uid = futs[fut]
+            try:
+                state.update(fut.result())
+            except Exception as e:
+                # If we can't read a user's state, treat unknown as "assume already favorited"
+                # → we will NOT add (so we never claim ownership we're unsure of) and NOT
+                # remove (only owned removes). Safe-by-omission for that user this cycle.
+                log(f"WARN: fav read failed for user {uid[:8]}: {e}")
+    return state
+
+
+def set_favorite(uid, cid):
+    api("POST", f"/UserFavoriteItems/{cid}?userId={uid}")
+
+
+def clear_favorite(uid, cid):
+    api("DELETE", f"/UserFavoriteItems/{cid}?userId={uid}")
+
+
+def sync_favorites(warm_ids, owned, prev_warm):
+    """
+    Set IsFavorite=true for warm channels across ALL users (only where not already set),
+    and remove daemon-OWNED favorites whose channel went cold. Returns updated owned set.
+    Safe: never removes a favorite a user set themselves (see plan_favorite_changes).
+
+    EFFICIENCY: querying per-user favorite state is expensive (one call per user). We only
+    do it for channels whose warm-state CHANGED since last cycle (newly warm or newly cold),
+    so the steady state (warm set unchanged) costs ZERO favorite queries. `prev_warm` is the
+    warm set from the previous cycle.
+    """
+    if not ENABLE_AUTO_FAVORITE:
+        return owned
+
+    warm_ids = set(warm_ids)
+    # Channels we must (re)evaluate this cycle:
+    #  - newly warm (need to add favorites)
+    #  - newly cold but owned (need to remove favorites)
+    newly_warm = warm_ids - prev_warm
+    cold_owned = {cid for (_u, cid) in owned if cid not in warm_ids}
+    channels_of_interest = newly_warm | cold_owned
+    if not channels_of_interest:
+        return owned  # nothing changed — no per-user queries, cheap cycle
+
+    try:
+        users = get_users()
+    except Exception as e:
+        log(f"WARN: could not read /Users ({e}); skipping favorite sync this cycle")
+        return owned
+    try:
+        current = get_favorite_state(users, channels_of_interest)
+    except Exception as e:
+        log(f"WARN: could not read favorite state ({e}); skipping favorite sync")
+        return owned
+
+    # plan over the changed channels only (warm-of-interest for adds; owned handles removes)
+    adds, removes = plan_favorite_changes(
+        warm=warm_ids & channels_of_interest,
+        users=users,
+        current_favs=current,
+        owned={(u, c) for (u, c) in owned if c in channels_of_interest},
+    )
+
+    new_owned = set(owned)
+    for (uid, cid) in adds:
+        try:
+            set_favorite(uid, cid)
+            new_owned.add((uid, cid))
+        except Exception as e:
+            log(f"WARN: set_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
+    for (uid, cid) in removes:
+        try:
+            clear_favorite(uid, cid)
+        except Exception as e:
+            log(f"WARN: clear_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
+        finally:
+            new_owned.discard((uid, cid))  # stop tracking even if the channel's gone
+
+    if adds or removes:
+        log(f"favorites: +{len(adds)} / -{len(removes)} (owned now {len(new_owned)})")
+        save_owned(new_owned)
+    return new_owned
+
+
+def remove_all_owned_favorites():
+    """Graceful-stop / teardown: delete every daemon-owned favorite, clear the state file."""
+    owned = load_owned()
+    if not owned:
+        return
+    log(f"favorites: removing all {len(owned)} daemon-owned favorite(s)")
+    for (uid, cid) in list(owned):
+        try:
+            clear_favorite(uid, cid)
+        except Exception as e:
+            log(f"WARN: clear_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
+    save_owned(set())
 
 
 def get_warm_channels():
@@ -149,20 +358,26 @@ def list_decorated_channels():
     return out
 
 
-def sync_once(decorated):
+def sync_once(decorated, owned=None, prev_warm=None):
     """
     decorated: dict {channelId: original_name} we are currently decorating (in-memory hint).
-    Returns the updated set.
+    owned: set of (userId, channelId) favorites the daemon added (loaded from disk if None).
+    prev_warm: warm channel-id set from the previous cycle (for cheap favorite diffing).
+    Returns (decorated, owned, warm_ids).
 
-    Cold-revert is STATELESS: we scan the live channel list for anything still decorated
-    and revert any that aren't warm. So a daemon restart (empty `decorated`) still cleans
-    up correctly, and a one-shot run reverts cold channels too.
+    Cold-revert is STATELESS for NAMES: we scan the live channel list for anything still
+    decorated and revert any that aren't warm. Favorites are tracked via the persistent
+    owned-set (favorites aren't self-identifying like the 🔥 name prefix is).
     """
+    if owned is None:
+        owned = load_owned()
+    if prev_warm is None:
+        prev_warm = set()
     try:
         warm = get_warm_channels()
     except Exception as e:
         log(f"WARN: could not read /Sessions ({e}); skipping cycle (no changes)")
-        return decorated
+        return decorated, owned, prev_warm
 
     # 1) Apply / update decoration on warm channels.
     for cid, count in warm.items():
@@ -201,18 +416,26 @@ def sync_once(decorated):
         finally:
             decorated.pop(cid, None)
 
-    return decorated
+    # 3) Sync favorites across all users (warm -> favorite; cold owned -> unfavorite).
+    #    Only re-evaluated for channels whose warm-state changed since prev_warm (cheap).
+    warm_ids = set(warm.keys())
+    owned = sync_favorites(warm_ids, owned, prev_warm)
+
+    return decorated, owned, warm_ids
 
 
 def main():
-    log(f"live-now-guide starting | base={BASE} poll={POLL_SECONDS}s")
+    log(f"live-now-guide starting | base={BASE} poll={POLL_SECONDS}s "
+        f"auto_favorite={ENABLE_AUTO_FAVORITE}")
     try:
         reconcile_all()
     except Exception as e:
         log(f"WARN: reconcile failed ({e}); continuing")
     decorated = {}
+    owned = load_owned()
+    prev_warm = set()
     while True:
-        decorated = sync_once(decorated)
+        decorated, owned, prev_warm = sync_once(decorated, owned, prev_warm)
         time.sleep(POLL_SECONDS)
 
 
@@ -222,6 +445,13 @@ if __name__ == "__main__":
         log("one-shot sync")
         sync_once({})
     elif len(sys.argv) > 1 and sys.argv[1] == "reconcile":
+        # Reconcile NAMES (strip stale decorations). Owned favorites are reconciled
+        # automatically on the next sync (removes are stateless via the owned-set).
         reconcile_all()
+    elif len(sys.argv) > 1 and sys.argv[1] == "teardown":
+        # Graceful stop: strip all name decorations + remove ALL daemon-owned favorites.
+        log("teardown: reverting all names + removing all daemon-owned favorites")
+        reconcile_all()
+        remove_all_owned_favorites()
     else:
         main()

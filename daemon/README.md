@@ -33,14 +33,40 @@ Validated facts (see `knowledge/jellyfin-livetv-channel-rename-mechanism-2026-06
 2. A warm channel = a session whose `NowPlayingItem.Type == TvChannel`; the item's `Id` is
    the channel id (for live TV the item *is* the channel). Distinct sessions = viewer count.
 3. For each warm channel set `Name = "🔥xN <original>"`. When cold, restore `<original>`.
+4. (Optional, `ENABLE_AUTO_FAVORITE=true`) Also **favorite warm channels for ALL users** so
+   they float to the top of the native Android TV guide's favorites block — the only
+   top-of-screen lever on the TV (the guide is otherwise channel-number sorted). Unfavorite
+   when cold. See "Auto-favorite" below.
 
-Safety:
+Safety (names):
 
 - **Idempotent** — strips any existing `🔥xN ` (or legacy `🔥 N · ` / `🔴 N · `) prefix before (re)applying.
 - **Stateless cold-revert** — each cycle also scans the channel list for any decorated
   channel that isn't warm and reverts it, so a daemon restart never leaves a channel stuck.
 - **Reconcile on startup** (and on `ExecStopPost`) — strips all stale decorations.
 - **Fail-safe** — if `/Sessions` can't be read, the cycle is a no-op (never blanks names).
+
+## Auto-favorite (`ENABLE_AUTO_FAVORITE=true`)
+
+Favorites are the only way to float a channel to the top of the native Android TV guide
+(both the guide grid and the Channels list are channel-number sorted; favorites pin to a
+block at the very top). So with this enabled, the daemon favorites each warm channel for
+**every user** (fetched fresh from `/Users` so new users are covered) and unfavorites it
+when the channel goes cold.
+
+**Hard safety guarantee — it NEVER deletes a favorite a user set themselves.** A persistent
+state file (`OWNED_FAVORITES_FILE`, default `owned-favorites.json`) records every
+`(userId, channelId)` favorite the daemon ADDED. Cold-revert and teardown only ever remove
+entries in that file. If a user already favorited a channel, the daemon does not re-add it
+and does not record it as owned — so it's never removed. This is covered by unit tests
+(`test_favorites.py`, run `python3 -m unittest test_favorites`).
+
+Efficiency: favorite state is read per-user (the API has no bulk endpoint), but ONLY for
+channels whose warm-state changed since the last cycle, and the reads run concurrently
+(`FAV_READ_WORKERS`). Steady state (warm set unchanged) costs zero favorite queries. A
+transient connection error is retried once and self-heals on the next cycle.
+
+Favoriting is just a `UserData` flag — it does NOT affect tuning.
 
 ## Deploy (hp)
 
@@ -62,8 +88,15 @@ argument, which mangles the UTF-8.
 
 ```
 python3 live_now_guide.py once        # one sync cycle then exit
-python3 live_now_guide.py reconcile   # strip all stale decorations then exit
+python3 live_now_guide.py reconcile   # strip all stale name decorations then exit
+python3 live_now_guide.py teardown    # FULL clean: revert all names + remove ALL
+                                      # daemon-owned favorites (leaves zero residue)
 ```
+
+On a normal `systemctl stop`/restart, `ExecStopPost` runs `reconcile` (names only) so a
+transient restart doesn't churn favorites — the owned-favorites file persists and the
+daemon re-reconciles favorites on the next start. To fully wipe daemon state (e.g. turning
+the feature off for good), run `teardown`.
 
 ### Logs
 
