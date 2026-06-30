@@ -212,6 +212,26 @@ class Durability(unittest.TestCase):
         d.sync_favorites({"c1"}, {("u1", "c1")}, prev_warm={"c1"}, full=True)
         self.assertIn(("u2", "c1"), added)        # full pass catches the new user
 
+    def test_transient_read_failure_retries_next_full_cycle(self):
+        # Cycle 1: u2's favorite-read fails (absent from state) -> u2 is skipped (no add).
+        # Cycle 2 (full): the read succeeds -> u2 gets the favorite. Channel stayed warm
+        # throughout; a delta path would never revisit it, but the full-every-cycle path does.
+        d.set_favorite = lambda uid, cid: added.append((uid, cid))
+        d.clear_favorite = lambda uid, cid: None
+        added = []
+        state = {"fail_u2": True}
+        def fav_state(users, chans):
+            out = {("u1", "c1"): False}
+            if not state["fail_u2"]:
+                out[("u2", "c1")] = False   # read succeeds the 2nd time
+            return out                       # u2 absent the 1st time = unknown -> skip
+        d.get_favorite_state = fav_state
+        d.sync_favorites({"c1"}, set(), prev_warm={"c1"}, full=True)   # cycle 1: u2 read missing
+        self.assertNotIn(("u2", "c1"), added)
+        state["fail_u2"] = False
+        d.sync_favorites({"c1"}, {("u1", "c1")}, prev_warm={"c1"}, full=True)  # cycle 2: retried
+        self.assertIn(("u2", "c1"), added)
+
 
 class FastPath(unittest.TestCase):
     """The newly-warm channel's favorites (the float) must be applied even if the cold-remove

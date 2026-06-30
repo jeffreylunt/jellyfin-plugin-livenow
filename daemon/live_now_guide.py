@@ -225,13 +225,12 @@ def sync_favorites(warm_ids, owned, prev_warm, full=False):
     and remove daemon-OWNED favorites whose channel went cold. Returns updated owned set.
     Safe: never removes a favorite a user set themselves (see plan_favorite_changes).
 
-    EFFICIENCY: querying per-user favorite state is expensive (one call per user). Normally we
-    only evaluate channels whose warm-state CHANGED since last cycle (newly warm or newly
-    cold), so the steady state costs ZERO favorite queries. `prev_warm` is the previous warm
-    set. Periodically (full=True) we re-evaluate ALL warm channels so that a NEW user (who
-    joined while a channel was already warm) or a user skipped by a transient read/write
-    failure still gets the favorite — the delta path alone would never revisit an
-    already-warm channel for them.
+    full=True (the DEFAULT every cycle — see main()): re-evaluate ALL currently-warm channels
+    against the CURRENT user set, so a NEW user, a dropped favorite-read, or a failed write
+    self-heals next cycle. plan_favorite_changes() skips already-set favorites, so steady state
+    issues ZERO redundant WRITES — only the per-cycle reads. full=False is the cheaper
+    delta-only path (newly-warm only) kept for the rare case read load must be trimmed; it does
+    NOT revisit an already-warm channel, so new users/dropped reads would be missed under it.
     """
     if not ENABLE_AUTO_FAVORITE:
         return owned
@@ -478,13 +477,17 @@ def main():
     decorated = {}
     owned = load_owned()
     prev_warm = set()
-    # Every FULL_FAVORITE_EVERY cycles, re-evaluate favorites for ALL warm channels (not just
-    # the delta) so new users / transiently-skipped users get caught up. Default ~every 10
-    # cycles (= ~7.5 min at 45s poll).
-    full_every = int(os.environ.get("FULL_FAVORITE_EVERY", "10"))
+    # RELIABILITY: re-evaluate favorites for ALL currently-warm channels against the CURRENT
+    # user set EVERY cycle (FULL_FAVORITE_EVERY=1 by default). plan_favorite_changes() skips
+    # favorites already set, so steady state issues ZERO redundant WRITES — only the per-cycle
+    # reads. This self-heals within one cycle: a NEW user, a dropped favorite-read, a failed
+    # set_favorite, or an externally-removed favorite all get re-added next cycle. (Delta-only
+    # would miss these on a channel that stays warm — the "all users" guarantee would silently
+    # break.) Set FULL_FAVORITE_EVERY>1 only if per-cycle read load becomes a problem.
+    full_every = int(os.environ.get("FULL_FAVORITE_EVERY", "1"))
     cycle = 0
     while True:
-        full = (cycle % full_every == 0)  # first cycle + every Nth
+        full = (cycle % full_every == 0)
         decorated, owned, prev_warm = sync_once(decorated, owned, prev_warm, full_favorites=full)
         cycle += 1
         time.sleep(POLL_SECONDS)
