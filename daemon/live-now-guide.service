@@ -1,0 +1,17 @@
+[Unit]
+Description=Live Now guide daemon — decorate warm Live TV channel names with viewer count
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jeff/live-now-guide
+EnvironmentFile=/home/jeff/live-now-guide/live-now-guide.env
+ExecStart=/usr/bin/python3 /home/jeff/live-now-guide/live_now_guide.py
+Restart=on-failure
+RestartSec=10
+# On stop, run a reconcile so we never leave a channel stuck decorated.
+ExecStopPost=/usr/bin/python3 /home/jeff/live-now-guide/live_now_guide.py reconcile
+
+[Install]
+WantedBy=default.target
