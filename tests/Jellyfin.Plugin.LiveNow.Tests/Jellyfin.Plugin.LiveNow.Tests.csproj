@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Test the pure, runtime-independent pieces by compiling them directly into the test
+         assembly (the plugin proj references the heavy Jellyfin.Controller ABI which we don't
+         need for the safety-logic tests). These three files have no Jellyfin dependency beyond
+         ILogger (Microsoft.Extensions.Logging.Abstractions, pulled in transitively). -->
+    <Compile Include="../../src/Jellyfin.Plugin.LiveNow/LiveNowEngine/FavoritePlan.cs" />
+    <Compile Include="../../src/Jellyfin.Plugin.LiveNow/LiveNowEngine/OwnedFavoritesStore.cs" />
+    <Compile Include="../../src/Jellyfin.Plugin.LiveNow/LiveNowEngine/NamePrefix.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
+  </ItemGroup>
+
+</Project>

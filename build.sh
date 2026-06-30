@@ -5,7 +5,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 PROJ=src/Jellyfin.Plugin.LiveNow
-VERSION=1.0.0.0
+VERSION=2.0.0.0
 
 echo "==> Building $PROJ (net9.0)…"
 docker run --rm \

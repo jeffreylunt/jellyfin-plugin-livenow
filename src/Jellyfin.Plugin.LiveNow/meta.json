@@ -7,6 +7,6 @@
     "owner": "jeffreylunt",
     "targetAbi": "10.11.0.0",
     "framework": "net9.0",
-    "version": "1.0.0.0",
-    "changelog": "Initial release: warm-channel API + Live Now page with one-tap tune-to-play (server-side PlayNow) and detail-page fallback."
+    "version": "2.0.0.0",
+    "changelog": "Self-contained release: the warm-channel name badge (🔥xN) + favorite-float now run entirely in-process inside Jellyfin (a background service via IPluginServiceRegistrator) — no external daemon, no File Transformation plugin, no config required. Favorites float instantly via IUserDataManager (fires the change event, no restart). The 'Live Now' web tab self-injects into the web client. Safety: only removes favorites it added, never a user's own; reconcile-on-startup; graceful revert on stop."
 }
