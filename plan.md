@@ -88,7 +88,19 @@ files in place (disabled) as a fallback until E2E passes; only then leave it ret
 - Version-bumped, release DLL/zip pushed to the public repo with "install this one plugin"
   instructions. Knowledge updated. External daemon retired + FT inject removed from Jeff's box.
 
-## Status (2026-06-30, end of session — HOLDING)
+## Status — SHIPPED (2026-06-30) ✅
+PUBLISHED v2.0.0: https://github.com/jeffreylunt/jellyfin-plugin-livenow/releases/tag/v2.0.0
+(asset live-now_2.0.0.0.zip, checksum verified == manifest; merged to main a2690fc; tag v2.0.0).
+Live on Jeff's Jellyfin (v2.0.0.0 Active, healthy). Definition of done: MET.
+- Clean E2E PASS: 🔥 badge + float (22/23 users), cold→clean revert, real user's own favorite untouched.
+- I-1 restart-survival VERIFIED via SIGKILL crash-isolation: startup reconcile cleaned 1 badge +
+  cleared 1 stale owned favorite (no orphans). StopAsync teardown also verified.
+- Uninstalled File Transformation (0 transforms) + Custom Tabs in the same restart; kept Live Now
+  v2 + Jeff's unrelated plugins. Daemon retired (stopped+disabled), no regression.
+- 23 unit tests green; 3 code reviews clean. Note: float latency is POLL-BOUND (~one 45s cycle),
+  not literally instant — lower PollSeconds to tighten.
+
+## Status (2026-06-30, end of session — HOLDING) [superseded by SHIPPED above]
 - DONE: v2.0.0.0 in-process plugin built; 23 xUnit tests green; both engine code reviews clean
   (fixes #1/#3/I-1/I-2/M-1/#7 applied); committed on branch live-now-guide-daemon
   (32307f3 code, d67a726 README). NOT pushed (publish gated).
