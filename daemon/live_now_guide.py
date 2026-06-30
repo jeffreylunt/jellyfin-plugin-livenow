@@ -477,14 +477,15 @@ def main():
     decorated = {}
     owned = load_owned()
     prev_warm = set()
-    # RELIABILITY: re-evaluate favorites for ALL currently-warm channels against the CURRENT
-    # user set EVERY cycle (FULL_FAVORITE_EVERY=1 by default). plan_favorite_changes() skips
-    # favorites already set, so steady state issues ZERO redundant WRITES — only the per-cycle
-    # reads. This self-heals within one cycle: a NEW user, a dropped favorite-read, a failed
-    # set_favorite, or an externally-removed favorite all get re-added next cycle. (Delta-only
-    # would miss these on a channel that stays warm — the "all users" guarantee would silently
-    # break.) Set FULL_FAVORITE_EVERY>1 only if per-cycle read load becomes a problem.
-    full_every = int(os.environ.get("FULL_FAVORITE_EVERY", "1"))
+    # RELIABILITY: the per-cycle DELTA path favorites a just-tuned channel for all CURRENT
+    # users in ~1 cycle (the common case — effectively instant). Every FULL_FAVORITE_EVERY
+    # cycles we ALSO do a FULL pass: re-evaluate ALL currently-warm channels against the CURRENT
+    # user set, so the rare edges self-heal — a NEW user account created mid-watch, a transient
+    # favorite-read failure, a failed set_favorite, or an external un-favorite all get re-added
+    # on the next full pass. plan_favorite_changes() skips already-set favorites, so the full
+    # pass issues ZERO redundant WRITES — only reads. Default every 10 cycles (~7.5 min at 45s
+    # poll) keeps the per-cycle read load gentle (respects the connection-drop concern).
+    full_every = int(os.environ.get("FULL_FAVORITE_EVERY", "10"))
     cycle = 0
     while True:
         full = (cycle % full_every == 0)
