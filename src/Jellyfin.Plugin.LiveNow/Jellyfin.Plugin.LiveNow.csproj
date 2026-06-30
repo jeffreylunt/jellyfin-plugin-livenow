@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <RootNamespace>Jellyfin.Plugin.LiveNow</RootNamespace>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Jellyfin 10.11.x server ABI (net9.0). Pulls in MediaBrowser.Controller/Model. -->
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded web page shipped inside the DLL and exposed via IHasWebPages. -->
+    <EmbeddedResource Include="Web\livenow.html" />
+  </ItemGroup>
+
+</Project>

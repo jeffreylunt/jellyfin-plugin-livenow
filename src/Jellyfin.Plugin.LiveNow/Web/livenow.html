@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Live Now</title>
+  <style>
+    :root {
+      --bg: #101418;
+      --card: #1b2027;
+      --card-hover: #232a33;
+      --accent: #00a4dc;
+      --text: #f2f4f7;
+      --muted: #8a93a0;
+      --warm: #ff7a59;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 18px 8px; gap: 12px; flex-wrap: wrap;
+    }
+    header h1 {
+      font-size: 1.35rem; margin: 0; display: flex; align-items: center; gap: 10px;
+    }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--warm); box-shadow: 0 0 8px var(--warm);
+      animation: pulse 1.8s infinite ease-in-out;
+    }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+    .sub { color: var(--muted); font-size: .85rem; padding: 0 18px 10px; }
+    #status { color: var(--muted); font-size: .85rem; }
+    main { padding: 8px 14px 32px; }
+    .grid {
+      display: grid; gap: 14px;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    }
+    .card {
+      background: var(--card); border-radius: 14px; overflow: hidden;
+      cursor: pointer; text-decoration: none; color: inherit;
+      display: flex; flex-direction: column;
+      border: 1px solid rgba(255,255,255,.05);
+      transition: transform .12s ease, background .12s ease;
+    }
+    .card:hover { background: var(--card-hover); transform: translateY(-2px); }
+    .logo {
+      height: 110px; background: #0b0e12; display: flex;
+      align-items: center; justify-content: center; overflow: hidden;
+    }
+    .logo img { max-height: 90px; max-width: 90%; object-fit: contain; }
+    .logo .placeholder { color: var(--muted); font-size: 2rem; }
+    .body { padding: 12px 14px 14px; }
+    .name { font-weight: 600; font-size: 1rem; margin: 0 0 4px; }
+    .prog { color: var(--muted); font-size: .85rem; margin: 0 0 10px;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .viewers {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: rgba(255,122,89,.14); color: var(--warm);
+      padding: 4px 9px; border-radius: 999px; font-size: .8rem; font-weight: 600;
+    }
+    .empty {
+      text-align: center; color: var(--muted); padding: 60px 20px;
+      font-size: 1rem; line-height: 1.5;
+    }
+    .empty .big { font-size: 2.4rem; margin-bottom: 12px; }
+    .err { color: #ff6b6b; padding: 24px 18px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span class="dot"></span> Live Now</h1>
+    <span id="status">Loading…</span>
+  </header>
+  <div class="sub">Channels someone is already watching. Tap one to tune in — it costs no extra upstream slot.</div>
+  <main><div id="content"><div class="empty">Loading…</div></div></main>
+
+  <script>
+  (function () {
+    // --- Resolve the Jellyfin base path and auth from whatever context we're in. ---
+    // The page lives under <base>/web/... when embedded, and is also openable directly.
+    // We derive <base> by stripping a trailing /web/... segment from the path.
+    function resolveBasePath() {
+      var p = window.location.pathname;
+      var webIdx = p.indexOf('/web/');
+      if (webIdx >= 0) return p.substring(0, webIdx);   // e.g. "/jellyfin"
+      // Fallback: directory of the current document.
+      return p.replace(/\/[^/]*$/, '');
+    }
+
+    var basePath = resolveBasePath();
+    var apiBase = basePath.replace(/\/$/, '');
+
+    // Find a live ApiClient. When this page runs as a Jellyfin "Custom Tab" it
+    // is an iframe inside the web client, so the SPA's ApiClient (with a LIVE,
+    // remote-controllable session) lives on window.parent. Standalone, there is
+    // none and we fall back to stored credentials + the details deep-link.
+    function liveApiClient() {
+      try { if (window.ApiClient && window.ApiClient.accessToken) return window.ApiClient; } catch (e) {}
+      try {
+        if (window.parent && window.parent !== window &&
+            window.parent.ApiClient && window.parent.ApiClient.accessToken) {
+          return window.parent.ApiClient;
+        }
+      } catch (e) { /* cross-origin — ignore */ }
+      return null;
+    }
+
+    // Auth token: prefer the live Jellyfin web client's ApiClient, then a
+    // localStorage's stored credentials. (No URL token fallback — putting a
+    // token in the address bar leaks it into history/logs/referrers.)
+    function resolveToken() {
+      var a = liveApiClient();
+      try { if (a) { var t = a.accessToken(); if (t) return t; } } catch (e) {}
+      try {
+        var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+        var srv = (creds.Servers || [])[0];
+        if (srv && srv.AccessToken) return srv.AccessToken;
+      } catch (e) { /* ignore */ }
+      return null;
+    }
+
+    function resolveServerId() {
+      var a = liveApiClient();
+      try { if (a && a.serverId) { var s = a.serverId(); if (s) return Promise.resolve(s); } } catch (e) {}
+      try {
+        var creds = JSON.parse(localStorage.getItem('jellyfin_credentials') || '{}');
+        var srv = (creds.Servers || [])[0];
+        if (srv && srv.Id) return Promise.resolve(srv.Id);
+      } catch (e) { /* ignore */ }
+      return fetch(apiBase + '/System/Info/Public')
+        .then(function (r) { return r.json(); })
+        .then(function (j) { return j.Id; })
+        .catch(function () { return null; });
+    }
+
+    var token = resolveToken();
+    var serverIdPromise = resolveServerId();
+
+    function authHeaders() {
+      var h = { 'Content-Type': 'application/json' };
+      if (token) h['Authorization'] = 'MediaBrowser Token="' + token + '"';
+      return h;
+    }
+
+    // Fallback navigation target: the channel's detail page (user taps Play).
+    function detailsUrl(channelId, serverId) {
+      var u = apiBase + '/web/#/details?id=' + encodeURIComponent(channelId);
+      if (serverId) u += '&serverId=' + encodeURIComponent(serverId);
+      return u;
+    }
+
+    // Tune into a channel.
+    //
+    // Primary path: ask the server (POST /LiveNow/Tune) to issue a PlayNow on
+    // the caller's OWN session. The server resolves the session from the auth
+    // context, so the channel starts playing on this client with no extra tap.
+    //   - Embedded as a Custom Tab: the parent web client begins playback; we
+    //     bring it to the player view.
+    //   - Standalone web-client tab: same, in this window.
+    //
+    // Fallback (HTTP 404 = no live controllable session, or any error): navigate
+    // to the channel detail page so the tap still lands on the right channel.
+    function tune(channelId, serverId) {
+      fetch(apiBase + '/LiveNow/Tune?channelId=' + encodeURIComponent(channelId),
+          { method: 'POST', headers: authHeaders() })
+        .then(function (r) {
+          if (r.ok) {
+            go(apiBase + '/web/#/video');   // surface the now-playing view
+          } else {
+            go(detailsUrl(channelId, serverId));
+          }
+        })
+        .catch(function () { go(detailsUrl(channelId, serverId)); });
+    }
+
+    // Navigate the top-most web client window when embedded, else our own.
+    function go(url) {
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.location.href = url;
+          return;
+        }
+      } catch (e) { /* cross-origin — fall through */ }
+      window.location.href = url;
+    }
+
+    function imageUrl(rel) {
+      if (!rel) return null;
+      return apiBase + '/' + rel.replace(/^\//, '');
+    }
+
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+      });
+    }
+
+    // Jellyfin's server serializer emits PascalCase JSON, but a future build or
+    // a proxy may camelCase it. Read either casing for each field.
+    function field(obj, name) {
+      var pascal = name.charAt(0).toUpperCase() + name.slice(1);
+      if (obj[name] !== undefined && obj[name] !== null) return obj[name];
+      if (obj[pascal] !== undefined && obj[pascal] !== null) return obj[pascal];
+      return undefined;
+    }
+
+    function render(channels, serverId) {
+      var content = document.getElementById('content');
+      var status = document.getElementById('status');
+      if (!channels || channels.length === 0) {
+        content.innerHTML =
+          '<div class="empty"><div class="big">📺</div>' +
+          'No channels are being watched right now.<br>' +
+          'When someone tunes into Live TV, it will show up here.</div>';
+        status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+        return;
+      }
+      var html = '<div class="grid">';
+      channels.forEach(function (ch) {
+        var channelId = field(ch, 'channelId') || '';
+        var channelName = field(ch, 'channelName') || 'Live channel';
+        var programName = field(ch, 'currentProgramName');
+        var viewerCount = field(ch, 'viewerCount');
+        var img = imageUrl(field(ch, 'imageUrl'));
+        var logo = img
+          ? '<div class="logo"><img src="' + esc(img) + '" alt="" ' +
+            'onerror="this.parentNode.innerHTML=\'<span class=&quot;placeholder&quot;>📺</span>\'"></div>'
+          : '<div class="logo"><span class="placeholder">📺</span></div>';
+        if (viewerCount === undefined) viewerCount = 1;
+        var viewers = viewerCount + ' watching';
+        var prog = programName ? esc(programName) : 'Live';
+        // href = details page (used for middle-click / standalone); the left
+        // click is intercepted below to issue a real PlayNow command.
+        html +=
+          '<a class="card" data-channel="' + esc(channelId) + '" ' +
+          'href="' + esc(detailsUrl(channelId, serverId)) + '">' +
+          logo +
+          '<div class="body">' +
+            '<div class="name">' + esc(channelName) + '</div>' +
+            '<div class="prog">' + prog + '</div>' +
+            '<span class="viewers">🔥 ' + esc(viewers) + '</span>' +
+          '</div></a>';
+      });
+      html += '</div>';
+      content.innerHTML = html;
+
+      // Delegate left-clicks on cards to tune() (PlayNow). Let modified clicks
+      // (new tab / middle-click) fall through to the details href.
+      var grid = content.querySelector('.grid');
+      if (grid) {
+        grid.addEventListener('click', function (ev) {
+          if (ev.defaultPrevented || ev.button !== 0 ||
+              ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) {
+            return;
+          }
+          var card = ev.target.closest ? ev.target.closest('.card') : null;
+          if (!card) return;
+          var cid = card.getAttribute('data-channel');
+          if (!cid) return;
+          ev.preventDefault();
+          tune(cid, serverId);
+        });
+      }
+
+      status.textContent = 'Updated ' + new Date().toLocaleTimeString();
+    }
+
+    function load() {
+      serverIdPromise.then(function (serverId) {
+        fetch(apiBase + '/LiveNow/Channels', { headers: authHeaders() })
+          .then(function (r) {
+            if (r.status === 401 || r.status === 403) {
+              throw new Error('Not authorized — open this page from inside the ' +
+                'Jellyfin web client (so it can use your session).');
+            }
+            if (!r.ok) throw new Error('Request failed (' + r.status + ')');
+            return r.json();
+          })
+          .then(function (data) { render(data, serverId); })
+          .catch(function (e) {
+            document.getElementById('content').innerHTML =
+              '<div class="err">' + esc(e.message) + '</div>';
+            document.getElementById('status').textContent = 'Error';
+          });
+      });
+    }
+
+    // Honor the plugin's configured RefreshSeconds (falls back to 15s).
+    load();
+    fetch(apiBase + '/LiveNow/Config', { headers: authHeaders() })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (cfg) {
+        var secs = cfg && (cfg.refreshSeconds || cfg.RefreshSeconds);
+        var ms = (secs && secs >= 5 ? secs : 15) * 1000;
+        setInterval(load, ms);
+      })
+      .catch(function () { setInterval(load, 15000); });
+  })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+    "category": "Live TV",
+    "guid": "b919b337-587b-4533-922e-c8f8c5c8c9b0",
+    "name": "Live Now",
+    "description": "Shows which Live TV channels are currently being watched on this server so you can tune into a warm channel instead of opening a new upstream slot.",
+    "overview": "Surfaces warm Live TV channels (someone is already watching) so the household tunes into already-open upstream streams.",
+    "owner": "jeffreylunt",
+    "targetAbi": "10.11.0.0",
+    "framework": "net9.0",
+    "version": "1.0.0.0",
+    "changelog": "Initial release: warm-channel API + Live Now page with one-tap tune-to-play (server-side PlayNow) and detail-page fallback."
+}
