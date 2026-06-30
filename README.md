@@ -14,6 +14,25 @@ This plugin nudges the household onto already-open channels.
 - **Plugin GUID:** `b919b337-587b-4533-922e-c8f8c5c8c9b0`
 - **Version:** 1.0.0.0
 
+## Recommended setup — Dispatcharr in PROXY mode
+
+For this plugin to actually save upstream connections, your IPTV source should be
+running in **proxy mode** (e.g. [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr)
+configured as a proxy that Jellyfin pulls from).
+
+- **Proxy mode (recommended):** one upstream IPTV stream is shared to multiple
+  clients. When someone is already watching a channel, others can join the **same**
+  live stream **without opening a new upstream connection** (or burning another
+  provider subscription slot). This is exactly the "join what's already live"
+  behavior the plugin is built to nudge people toward.
+- **Redirect mode (defeats the purpose):** each viewer is redirected to the provider
+  and opens their **own** upstream connection — so "joining" a warm channel still
+  consumes a slot, and a few viewers can exhaust your provider's connection limit.
+
+In short: the plugin surfaces *which channels are warm*; **proxy mode is what makes
+joining them free.** Without it, the plugin still works but the slot-saving benefit
+is largely lost.
+
 ## What it does
 
 1. Exposes an authenticated API endpoint:
