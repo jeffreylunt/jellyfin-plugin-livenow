@@ -242,8 +242,7 @@ def sync_favorites(warm_ids, owned, prev_warm, full=False):
     #  - newly cold but owned (need to remove favorites)
     newly_warm = warm_ids if full else (warm_ids - prev_warm)
     cold_owned = {cid for (_u, cid) in owned if cid not in warm_ids}
-    channels_of_interest = newly_warm | cold_owned
-    if not channels_of_interest:
+    if not (newly_warm | cold_owned):
         return owned  # nothing changed — no per-user queries, cheap cycle
 
     try:
@@ -251,33 +250,57 @@ def sync_favorites(warm_ids, owned, prev_warm, full=False):
     except Exception as e:
         log(f"WARN: could not read /Users ({e}); skipping favorite sync this cycle")
         return owned
-    try:
-        current = get_favorite_state(users, channels_of_interest)
-    except Exception as e:
-        log(f"WARN: could not read favorite state ({e}); skipping favorite sync")
-        return owned
-
-    # plan over the changed channels only (warm-of-interest for adds; owned handles removes)
-    adds, removes = plan_favorite_changes(
-        warm=warm_ids & channels_of_interest,
-        users=users,
-        current_favs=current,
-        owned={(u, c) for (u, c) in owned if c in channels_of_interest},
-    )
 
     new_owned = set(owned)
     n_add = n_rem = 0
-    for (uid, cid) in adds:
+
+    # FAST-PATH: do the ADDS for newly-warm channels FIRST (this is what floats the
+    # just-tuned channel to the top). Its read covers only the newly-warm channels, so it
+    # isn't delayed by the (potentially larger) cold-remove read. Removes can lag a cycle —
+    # a cold channel lingering one extra cycle is harmless.
+    if newly_warm:
         try:
-            set_favorite(uid, cid)
-            new_owned.add((uid, cid))
-            # Persist INCREMENTALLY: record the add as owned BEFORE the next network call,
-            # so a crash mid-loop never leaves a favorite set on the server but absent from
-            # owned (which would orphan it — never cleaned up when the channel goes cold).
-            save_owned(new_owned)
-            n_add += 1
+            current = get_favorite_state(users, newly_warm)
+            adds, _ = plan_favorite_changes(
+                warm=warm_ids & newly_warm, users=users,
+                current_favs=current,
+                owned={(u, c) for (u, c) in owned if c in newly_warm},
+            )
+            # Issue the add-writes CONCURRENTLY (same gentle pool as the reads) so the
+            # just-tuned channel floats within ~one cycle instead of waiting for ~24
+            # sequential POSTs. Record owned + persist only for confirmed sets.
+            def _do_add(pair):
+                set_favorite(*pair)
+                return pair
+            with ThreadPoolExecutor(max_workers=FAV_READ_WORKERS) as ex:
+                futs = {ex.submit(_do_add, p): p for p in adds}
+                for fut in as_completed(futs):
+                    p = futs[fut]
+                    try:
+                        fut.result()
+                        new_owned.add(p)
+                        # Persist as each add confirms (main thread only — save_owned is not
+                        # called from worker threads, so the file write stays single-writer).
+                        save_owned(new_owned)
+                        n_add += 1
+                    except Exception as e:
+                        log(f"WARN: set_favorite failed u={p[0][:8]} c={p[1][:8]}: {e}")
+            if n_add:
+                log(f"favorites: floated +{n_add} (newly-warm), owned now {len(new_owned)}")
         except Exception as e:
-            log(f"WARN: set_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
+            log(f"WARN: could not read favorite state for adds ({e}); skipping adds")
+
+    # REMOVES: unfavorite daemon-owned favorites whose channel went cold. Can lag.
+    removes = set()
+    if cold_owned:
+        try:
+            current = get_favorite_state(users, cold_owned)
+            _, removes = plan_favorite_changes(
+                warm=set(), users=users, current_favs=current,
+                owned={(u, c) for (u, c) in owned if c in cold_owned},
+            )
+        except Exception as e:
+            log(f"WARN: could not read favorite state for removes ({e}); skipping removes")
     for (uid, cid) in removes:
         try:
             clear_favorite(uid, cid)
@@ -290,8 +313,8 @@ def sync_favorites(warm_ids, owned, prev_warm, full=False):
         except Exception as e:
             log(f"WARN: clear_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
 
-    if adds or removes:
-        log(f"favorites: +{n_add}/{len(adds)} / -{n_rem}/{len(removes)} (owned now {len(new_owned)})")
+    if n_add or n_rem:
+        log(f"favorites: +{n_add} / -{n_rem} (owned now {len(new_owned)})")
         save_owned(new_owned)
     return new_owned
 

@@ -213,5 +213,44 @@ class Durability(unittest.TestCase):
         self.assertIn(("u2", "c1"), added)        # full pass catches the new user
 
 
+class FastPath(unittest.TestCase):
+    """The newly-warm channel's favorites (the float) must be applied even if the cold-remove
+    read fails — the add path must not be blocked by a slow/failing remove path."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self.tmp.close()
+        d.OWNED_FAVORITES_FILE = self.tmp.name
+        d.save_owned(set())
+        self._orig = {k: getattr(d, k) for k in
+                      ("get_users", "get_favorite_state", "set_favorite", "clear_favorite",
+                       "ENABLE_AUTO_FAVORITE")}
+        d.ENABLE_AUTO_FAVORITE = True
+        d.get_users = lambda: ["u1"]
+
+    def tearDown(self):
+        for k, v in self._orig.items():
+            setattr(d, k, v)
+        os.unlink(self.tmp.name)
+
+    def test_add_applied_even_if_remove_read_fails(self):
+        # c_new is newly warm; c_old is cold+owned. The remove-phase read raises, but the
+        # add for c_new must still go through (the float isn't blocked by the remove path).
+        added = []
+        d.set_favorite = lambda uid, cid: added.append((uid, cid))
+        d.clear_favorite = lambda uid, cid: None
+        def fav_state(users, chans):
+            chans = set(chans)
+            if "c_old" in chans:      # the remove-phase read
+                raise RuntimeError("remove read failed")
+            return {("u1", "c_new"): False}   # the add-phase read
+        d.get_favorite_state = fav_state
+        owned = d.sync_favorites(
+            warm_ids={"c_new"}, owned={("u1", "c_old")}, prev_warm=set())
+        self.assertIn(("u1", "c_new"), added)          # add went through
+        self.assertIn(("u1", "c_new"), owned)          # tracked
+        self.assertIn(("u1", "c_old"), owned)          # remove skipped this cycle (retried later)
+
+
 if __name__ == "__main__":
     unittest.main()
