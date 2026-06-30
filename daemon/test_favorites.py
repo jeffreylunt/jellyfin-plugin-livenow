@@ -135,5 +135,83 @@ class FavoritePlan(unittest.TestCase):
         self.assertEqual(removes, set())
 
 
+class Durability(unittest.TestCase):
+    """The owned-favorites.json must always reflect what's actually set on the server, even
+    across crashes and partial failures — otherwise daemon favorites orphan (set on server,
+    untracked) and never get cleaned up."""
+
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self.tmp.close()
+        d.OWNED_FAVORITES_FILE = self.tmp.name
+        d.save_owned(set())
+        # stub the network + user list
+        self._orig = {k: getattr(d, k) for k in
+                      ("get_users", "get_favorite_state", "set_favorite", "clear_favorite",
+                       "ENABLE_AUTO_FAVORITE")}
+        d.ENABLE_AUTO_FAVORITE = True
+        d.get_users = lambda: ["u1", "u2"]
+
+    def tearDown(self):
+        for k, v in self._orig.items():
+            setattr(d, k, v)
+        os.unlink(self.tmp.name)
+
+    def test_add_is_persisted_before_next_call(self):
+        # Simulate a crash: set_favorite succeeds for u1, then raises for u2 (process dies).
+        # The owned file must already contain u1's add (persisted incrementally), so it's
+        # never orphaned.
+        d.get_favorite_state = lambda users, chans: {("u1", "c1"): False, ("u2", "c1"): False}
+        calls = []
+        def flaky_set(uid, cid):
+            calls.append((uid, cid))
+            if uid == "u2":
+                raise RuntimeError("connection died")
+        d.set_favorite = flaky_set
+        d.clear_favorite = lambda uid, cid: None
+        d.sync_favorites({"c1"}, set(), prev_warm=set())
+        on_disk = d.load_owned()
+        self.assertIn(("u1", "c1"), on_disk)      # u1's add survived the u2 crash
+        self.assertNotIn(("u2", "c1"), on_disk)   # u2's failed add is NOT recorded
+
+    def test_failed_clear_keeps_entry_owned(self):
+        # c1 went cold; clear fails for u2 -> u2 must STAY owned so it's retried (not orphaned).
+        d.save_owned({("u1", "c1"), ("u2", "c1")})
+        d.get_favorite_state = lambda users, chans: {("u1", "c1"): True, ("u2", "c1"): True}
+        def flaky_clear(uid, cid):
+            if uid == "u2":
+                raise RuntimeError("delete failed")
+        d.clear_favorite = flaky_clear
+        d.set_favorite = lambda uid, cid: None
+        # c1 is cold (warm set empty); both are owned -> try to remove both
+        owned = d.sync_favorites(set(), {("u1", "c1"), ("u2", "c1")}, prev_warm={"c1"})
+        self.assertNotIn(("u1", "c1"), owned)     # cleared -> dropped
+        self.assertIn(("u2", "c1"), owned)        # failed clear -> KEPT for retry
+        self.assertEqual(d.load_owned(), {("u2", "c1")})  # persisted
+
+    def test_teardown_retains_failed_deletes(self):
+        d.save_owned({("u1", "c1"), ("u2", "c1")})
+        def flaky_clear(uid, cid):
+            if uid == "u2":
+                raise RuntimeError("delete failed")
+        d.clear_favorite = flaky_clear
+        d.remove_all_owned_favorites()
+        self.assertEqual(d.load_owned(), {("u2", "c1")})  # u1 cleared; u2 kept (not wiped)
+
+    def test_full_pass_catches_new_user_on_already_warm_channel(self):
+        # c1 already warm last cycle (in prev_warm). A new user u2 has no favorite. Delta path
+        # would skip c1 entirely; the FULL pass must add it for u2.
+        d.get_favorite_state = lambda users, chans: {("u1", "c1"): True, ("u2", "c1"): False}
+        added = []
+        d.set_favorite = lambda uid, cid: added.append((uid, cid))
+        d.clear_favorite = lambda uid, cid: None
+        # delta: prev_warm already has c1 -> no work
+        d.sync_favorites({"c1"}, {("u1", "c1")}, prev_warm={"c1"}, full=False)
+        self.assertEqual(added, [])               # delta misses u2
+        # full: re-evaluates c1 -> adds u2
+        d.sync_favorites({"c1"}, {("u1", "c1")}, prev_warm={"c1"}, full=True)
+        self.assertIn(("u2", "c1"), added)        # full pass catches the new user
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -219,25 +219,28 @@ def clear_favorite(uid, cid):
     api("DELETE", f"/UserFavoriteItems/{cid}?userId={uid}")
 
 
-def sync_favorites(warm_ids, owned, prev_warm):
+def sync_favorites(warm_ids, owned, prev_warm, full=False):
     """
     Set IsFavorite=true for warm channels across ALL users (only where not already set),
     and remove daemon-OWNED favorites whose channel went cold. Returns updated owned set.
     Safe: never removes a favorite a user set themselves (see plan_favorite_changes).
 
-    EFFICIENCY: querying per-user favorite state is expensive (one call per user). We only
-    do it for channels whose warm-state CHANGED since last cycle (newly warm or newly cold),
-    so the steady state (warm set unchanged) costs ZERO favorite queries. `prev_warm` is the
-    warm set from the previous cycle.
+    EFFICIENCY: querying per-user favorite state is expensive (one call per user). Normally we
+    only evaluate channels whose warm-state CHANGED since last cycle (newly warm or newly
+    cold), so the steady state costs ZERO favorite queries. `prev_warm` is the previous warm
+    set. Periodically (full=True) we re-evaluate ALL warm channels so that a NEW user (who
+    joined while a channel was already warm) or a user skipped by a transient read/write
+    failure still gets the favorite — the delta path alone would never revisit an
+    already-warm channel for them.
     """
     if not ENABLE_AUTO_FAVORITE:
         return owned
 
     warm_ids = set(warm_ids)
     # Channels we must (re)evaluate this cycle:
-    #  - newly warm (need to add favorites)
+    #  - newly warm (need to add favorites) — or ALL warm channels on a full pass
     #  - newly cold but owned (need to remove favorites)
-    newly_warm = warm_ids - prev_warm
+    newly_warm = warm_ids if full else (warm_ids - prev_warm)
     cold_owned = {cid for (_u, cid) in owned if cid not in warm_ids}
     channels_of_interest = newly_warm | cold_owned
     if not channels_of_interest:
@@ -263,38 +266,54 @@ def sync_favorites(warm_ids, owned, prev_warm):
     )
 
     new_owned = set(owned)
+    n_add = n_rem = 0
     for (uid, cid) in adds:
         try:
             set_favorite(uid, cid)
             new_owned.add((uid, cid))
+            # Persist INCREMENTALLY: record the add as owned BEFORE the next network call,
+            # so a crash mid-loop never leaves a favorite set on the server but absent from
+            # owned (which would orphan it — never cleaned up when the channel goes cold).
+            save_owned(new_owned)
+            n_add += 1
         except Exception as e:
             log(f"WARN: set_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
     for (uid, cid) in removes:
         try:
             clear_favorite(uid, cid)
+            # Only stop tracking on a CONFIRMED clear. If the DELETE failed the favorite is
+            # still set on the server, so we keep it owned → the next cycle retries the
+            # removal (never orphan a daemon favorite on a transient failure).
+            new_owned.discard((uid, cid))
+            save_owned(new_owned)
+            n_rem += 1
         except Exception as e:
             log(f"WARN: clear_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
-        finally:
-            new_owned.discard((uid, cid))  # stop tracking even if the channel's gone
 
     if adds or removes:
-        log(f"favorites: +{len(adds)} / -{len(removes)} (owned now {len(new_owned)})")
+        log(f"favorites: +{n_add}/{len(adds)} / -{n_rem}/{len(removes)} (owned now {len(new_owned)})")
         save_owned(new_owned)
     return new_owned
 
 
 def remove_all_owned_favorites():
-    """Graceful-stop / teardown: delete every daemon-owned favorite, clear the state file."""
+    """Graceful-stop / teardown: delete every daemon-owned favorite. RETAINS any entry whose
+    DELETE failed (don't wipe state on a transient failure — that would orphan the favorite
+    on the server with no record of it; the next teardown/cycle retries those)."""
     owned = load_owned()
     if not owned:
         return
     log(f"favorites: removing all {len(owned)} daemon-owned favorite(s)")
+    remaining = set(owned)
     for (uid, cid) in list(owned):
         try:
             clear_favorite(uid, cid)
+            remaining.discard((uid, cid))
         except Exception as e:
-            log(f"WARN: clear_favorite failed u={uid[:8]} c={cid[:8]}: {e}")
-    save_owned(set())
+            log(f"WARN: clear_favorite failed u={uid[:8]} c={cid[:8]}: {e} (kept owned)")
+    save_owned(remaining)
+    if remaining:
+        log(f"favorites: {len(remaining)} entr(ies) could not be cleared — kept for retry")
 
 
 def get_warm_channels():
@@ -358,11 +377,13 @@ def list_decorated_channels():
     return out
 
 
-def sync_once(decorated, owned=None, prev_warm=None):
+def sync_once(decorated, owned=None, prev_warm=None, full_favorites=False):
     """
     decorated: dict {channelId: original_name} we are currently decorating (in-memory hint).
     owned: set of (userId, channelId) favorites the daemon added (loaded from disk if None).
     prev_warm: warm channel-id set from the previous cycle (for cheap favorite diffing).
+    full_favorites: re-evaluate favorites for ALL warm channels (not just the delta) — used
+      periodically to catch new users / users skipped by a transient failure.
     Returns (decorated, owned, warm_ids).
 
     Cold-revert is STATELESS for NAMES: we scan the live channel list for anything still
@@ -417,9 +438,9 @@ def sync_once(decorated, owned=None, prev_warm=None):
             decorated.pop(cid, None)
 
     # 3) Sync favorites across all users (warm -> favorite; cold owned -> unfavorite).
-    #    Only re-evaluated for channels whose warm-state changed since prev_warm (cheap).
+    #    Delta-only by default (cheap); periodic full pass heals new users / skipped reads.
     warm_ids = set(warm.keys())
-    owned = sync_favorites(warm_ids, owned, prev_warm)
+    owned = sync_favorites(warm_ids, owned, prev_warm, full=full_favorites)
 
     return decorated, owned, warm_ids
 
@@ -434,8 +455,15 @@ def main():
     decorated = {}
     owned = load_owned()
     prev_warm = set()
+    # Every FULL_FAVORITE_EVERY cycles, re-evaluate favorites for ALL warm channels (not just
+    # the delta) so new users / transiently-skipped users get caught up. Default ~every 10
+    # cycles (= ~7.5 min at 45s poll).
+    full_every = int(os.environ.get("FULL_FAVORITE_EVERY", "10"))
+    cycle = 0
     while True:
-        decorated, owned, prev_warm = sync_once(decorated, owned, prev_warm)
+        full = (cycle % full_every == 0)  # first cycle + every Nth
+        decorated, owned, prev_warm = sync_once(decorated, owned, prev_warm, full_favorites=full)
+        cycle += 1
         time.sleep(POLL_SECONDS)
 
 
