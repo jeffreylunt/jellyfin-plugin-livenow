@@ -5,7 +5,7 @@ NATIVE Jellyfin guide on every client (incl. the Google TV / Android TV app) by
 decorating the channel's DISPLAY NAME with the live viewer count.
 
 While someone is watching a channel, its Jellyfin name becomes:
-    "🔥 3 · ESPN HD"
+    "🔥x3 ESPN HD"
 and reverts to the original ("ESPN HD") the moment it goes cold.
 
 WHY display-name decoration (validated 2026-06-30):
@@ -23,8 +23,8 @@ Run ON the hp host (so curl/JSON never round-trips emoji through SSH args, which
 UTF-8). See systemd unit live-now-guide.service.
 
 Safety:
-  - Idempotent: strips any existing "🔥 N · " (or legacy "🔴 N · ") prefix before
-    (re)applying, so the count updates cleanly and double-prefixing can't happen.
+  - Idempotent: strips any existing "🔥xN " (or legacy "🔥 N · " / "🔴 N · ") prefix
+    before (re)applying, so the count updates cleanly and double-prefixing can't happen.
   - Crash-safe: on startup it strips stale prefixes off ALL channels (reconcile), so a
     crash mid-cycle never leaves a channel stuck showing a stale count.
   - Read-only fallback: if /Sessions can't be read, it does nothing this cycle (never
@@ -43,9 +43,13 @@ import urllib.error
 BASE = os.environ.get("JELLYFIN_URL", "http://localhost:8096/jellyfin").rstrip("/")
 TOKEN = os.environ.get("JELLYFIN_TOKEN", "4dc796216cbe4ed99a1a0c4ed244afe2")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "45"))
-# Decoration: "🔥 {n} · {name}". The PREFIX_RE must round-trip whatever we write.
-# Also matches the legacy 🔴 prefix so any older decoration is stripped/reverted cleanly.
-PREFIX_RE = re.compile(r"^[\U0001F525\U0001F534] \d+ · ")  # "🔥 / 🔴 <num> · "
+# Decoration: "🔥x{n} {name}" (fire + lowercase x + count + space). PREFIX_RE must round-trip
+# whatever we write, AND also match the older "🔥 N · " / "🔴 N · " formats so any existing
+# decoration is stripped/reverted cleanly across a format change.
+PREFIX_RE = re.compile(
+    r"^[\U0001F525\U0001F534]"      # 🔥 or legacy 🔴
+    r"(?:x\d+ |\s+\d+ · )"          # new "x<num> " OR legacy " <num> · "
+)
 # A user we can pass for the /Items read (any valid user id works for metadata read).
 USER_ID = os.environ.get("JELLYFIN_USER_ID", "727583f8f86b42b4ac500a28ddfe5f56")  # jeff
 
@@ -81,7 +85,7 @@ def strip_prefix(name):
 
 
 def decorate(name, n):
-    return f"\U0001F525 {n} · {name}"  # 🔥
+    return f"\U0001F525x{n} {name}"  # 🔥x<n> <name>, e.g. "🔥x3 ESPN HD"
 
 
 def get_warm_channels():

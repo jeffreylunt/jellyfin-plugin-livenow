@@ -5,7 +5,7 @@ every client — including the Google TV / Android TV app — by decorating the 
 **display name** with the live viewer count:
 
 ```
-ESPN HD   →   🔥 3 · ESPN HD     (while 3 people are watching)
+ESPN HD   →   🔥x3 ESPN HD     (while 3 people are watching)
 ```
 
 and reverting to the original name the moment the channel goes cold.
@@ -32,11 +32,11 @@ Validated facts (see `knowledge/jellyfin-livetv-channel-rename-mechanism-2026-06
 1. Poll `GET /Sessions` every `POLL_SECONDS` (default 45).
 2. A warm channel = a session whose `NowPlayingItem.Type == TvChannel`; the item's `Id` is
    the channel id (for live TV the item *is* the channel). Distinct sessions = viewer count.
-3. For each warm channel set `Name = "🔥 N · <original>"`. When cold, restore `<original>`.
+3. For each warm channel set `Name = "🔥xN <original>"`. When cold, restore `<original>`.
 
 Safety:
 
-- **Idempotent** — strips any existing `🔥 N · ` (or legacy `🔴 N · `) prefix before (re)applying.
+- **Idempotent** — strips any existing `🔥xN ` (or legacy `🔥 N · ` / `🔴 N · `) prefix before (re)applying.
 - **Stateless cold-revert** — each cycle also scans the channel list for any decorated
   channel that isn't warm and reverts it, so a daemon restart never leaves a channel stuck.
 - **Reconcile on startup** (and on `ExecStopPost`) — strips all stale decorations.
